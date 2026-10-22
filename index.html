@@ -22,11 +22,14 @@
 
   /* ============ 1. ISI KONFIGURASI INI (Firebase Console > Project settings > Your apps > Web) ============ */
   var FIREBASE_CONFIG = {
-    apiKey: "ISI_API_KEY",
-    authDomain: "ISI_PROJECT_ID.firebaseapp.com",
-    projectId: "ISI_PROJECT_ID",
-    appId: "ISI_APP_ID"
+    apiKey: "AIzaSyAo6eOqqzGRa4225I_C0tfrb_CBwEAj688",
+    authDomain: "rencana-cerdas.firebaseapp.com",
+    projectId: "rencana-cerdas",
+    appId: "1:340623482911:web:d2bd0f69a09a720782352a"
   };
+  // Hanya akun dengan domain ini yang boleh masuk. Subdomain ikut diterima (mis. guru.sd.belajar.id, admin.sd.belajar.id).
+  // Batasi juga di aturan Firestore (lihat panduan) karena pemeriksaan di halaman web saja tidak cukup.
+  var ALLOWED_DOMAINS = ["belajar.id"];
   var SCHOOL_ID = "sdn-lanas-1"; // id dokumen sekolah di Firestore: schools/{SCHOOL_ID}/data/{kunci}
   /* ======================================================================================================= */
 
@@ -35,6 +38,9 @@
   // dan cerdas_gemini_api_key / cerdas_gemini_model (kunci rahasia tetap di perangkat).
   var KEYS = ["rc_users", "rc_school_settings", "rc_academic_years", "rc_calendars", "rc_effective_weeks",
     "rc_cps", "rc_atps", "rc_protas", "rc_prosems", "rc_review_notes", "rc_audit_logs", "rc_curriculum_references"];
+
+  // Dipakai skrip login: window.__rcCloud (mode cloud aktif), __rcUser (akun yang masuk), __rcFatal (gagal), __rcSignOut()
+  window.__rcSignOut = function () { return st.authM && st.auth ? st.authM.signOut(st.auth) : Promise.resolve(); };
 
   var proto = Storage.prototype;
   var oSet = proto.setItem, oClear = proto.clear;
@@ -87,7 +93,7 @@
     return new Promise(function (resolve, reject) {
       var first = true;
       st.fs.onSnapshot(st.fs.collection(st.db, "schools", SCHOOL_ID, "data"), function (snap) {
-        var changed = false;
+        var changed = false, usersChanged = false;
         st.applying = true;
         try {
           snap.docChanges().forEach(function (ch) {
@@ -95,9 +101,11 @@
             var k = ch.doc.id, d = ch.doc.data();
             if (!isSync(k) || typeof d.value !== "string") return;
             if (st.pending[k] || st.busy[k] > 0) return; // jangan timpa tulisan lokal yang sedang berjalan
-            if (ls.getItem(k) !== d.value) { oSet.call(ls, k, d.value); changed = true; }
+            if (ls.getItem(k) !== d.value) { oSet.call(ls, k, d.value); changed = true; if (k === "rc_users") usersChanged = true; }
           });
         } finally { st.applying = false; }
+        // Penulisan rc_users bersifat "terakhir menang": jika daftar dari perangkat lain tidak memuat akun ini, daftarkan lagi.
+        if (usersChanged && window.__rcEnsureSelf) window.__rcEnsureSelf();
         if (first) {
           first = false;
           st.ready = true;
@@ -150,7 +158,11 @@
   }
 
   var loginBox;
+  function showLoading(text) {
+    if (window.__sipenaAuthUI && window.__sipenaAuthUI.loading) window.__sipenaAuthUI.loading(text); else hideLogin();
+  }
   function showLogin(doLogin, message) {
+    if (window.__sipenaAuthUI) { window.__sipenaAuthUI.show(doLogin, message); return; }
     whenBody(function () {
       if (!loginBox) {
         loginBox = el("div", "position:fixed;inset:0;z-index:100000;background:#F8FAFC;display:flex;align-items:center;justify-content:center;font-family:'Plus Jakarta Sans',sans-serif");
@@ -172,16 +184,31 @@
   }
   function hideLogin() { if (loginBox) loginBox.style.display = "none"; }
 
+  function emailAllowed(email) {
+    var e = String(email || "").toLowerCase(), at = e.lastIndexOf("@");
+    if (at < 1) return false;
+    var d = e.slice(at + 1);
+    return ALLOWED_DOMAINS.some(function (a) { return d === a || d.slice(-(a.length + 1)) === "." + a; });
+  }
+
   function requireLogin() {
     return new Promise(function (resolve) {
-      var done = false;
+      var done = false, notice = "";
       st.authM.onAuthStateChanged(st.auth, function (u) {
-        if (u) { hideLogin(); if (!done) { done = true; resolve(u); } }
-        else showLogin(function () {
-          var p = new st.authM.GoogleAuthProvider();
-          p.setCustomParameters({ prompt: "select_account" });
-          return st.authM.signInWithPopup(st.auth, p);
-        });
+        if (u && !emailAllowed(u.email)) {
+          notice = "Akun " + u.email + " tidak diizinkan. Gunakan akun belajar.id.";
+          st.authM.signOut(st.auth);
+          return;
+        }
+        if (u) { showLoading("Memuat data sekolah\u2026"); if (!done) { done = true; resolve(u); } }
+        else {
+          showLogin(function () {
+            var p = new st.authM.GoogleAuthProvider();
+            p.setCustomParameters({ prompt: "select_account" }); // tanpa "hd" agar akun bersubdomain (guru.sd.belajar.id) tetap muncul
+            return st.authM.signInWithPopup(st.auth, p);
+          }, notice);
+          notice = "";
+        }
       });
     });
   }
@@ -193,6 +220,7 @@
       setBadge("local");
       return;
     }
+    window.__rcCloud = true;
     try {
       var mods = await Promise.all([import(SDK + "firebase-app.js"), import(SDK + "firebase-auth.js"), import(SDK + "firebase-firestore.js")]);
       var app = mods[0].initializeApp(FIREBASE_CONFIG);
@@ -202,6 +230,7 @@
         st.db = st.fs.initializeFirestore(app, { localCache: st.fs.persistentLocalCache({ tabManager: st.fs.persistentMultipleTabManager() }) });
       } catch (e) { st.db = st.fs.getFirestore(app); }
       st.user = await requireLogin();
+      window.__rcUser = { email: st.user.email, name: st.user.displayName || "" };
       await listen();
       setBadge("ok");
       window.addEventListener("pagehide", flush);
@@ -209,6 +238,7 @@
     } catch (e) {
       console.error("[Firestore] inisialisasi gagal", e);
       st.ready = false;
+      window.__rcFatal = { code: e && e.code, email: st.user && st.user.email };
       var denied = e && e.code === "permission-denied";
       if (denied && st.authM) { try { await st.authM.signOut(st.auth); } catch (_) {} }
       setBadge("err", denied ? "akun belum terdaftar" : (e && e.code));
@@ -275,62 +305,88 @@
 .spl-school-ic{flex-shrink:0;width:44px;height:44px;border-radius:13px;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,#2dd4bf,#0e7490);box-shadow:0 3px 0 #0a4a52,0 8px 14px -6px rgba(13,148,136,.5)}
 .spl-school-card b{display:block;font:800 14px/1.25 'Sora','Plus Jakarta Sans',sans-serif;color:#0f172a}
 .spl-school-card span{display:block;margin-top:2px;font-size:11.5px;font-weight:600;color:#0f766e}
+
+/* ---- login satu tombol (akun belajar.id) ---- */
+.spl-gbtn{width:100%;display:flex;align-items:center;justify-content:center;gap:12px;height:54px;margin-top:22px;border-radius:14px;border:1.5px solid #cbd5e1;background:#fff;color:#0f172a;cursor:pointer;
+  font:800 14.5px 'Sora','Plus Jakarta Sans',sans-serif;letter-spacing:.02em;box-shadow:0 4px 0 #cbd5e1,0 14px 24px -12px rgba(15,23,42,.3);transition:transform .12s,box-shadow .12s,border-color .2s;-webkit-tap-highlight-color:transparent}
+.spl-gbtn:hover{border-color:#14b8a6}
+.spl-gbtn:active{transform:translateY(3px);box-shadow:0 1px 0 #cbd5e1,0 6px 12px -8px rgba(15,23,42,.3)}
+.spl-gbtn:disabled{opacity:.7;cursor:wait}
+.spl-gbtn svg{width:22px;height:22px;flex-shrink:0}
+.spl-load{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:22px;height:54px;border-radius:14px;background:#f0fdfa;border:1px solid #99f6e4;color:#0f766e;font-size:13px;font-weight:700}
+.spl-load[hidden],.spl-gbtn[hidden],.spl-act[hidden]{display:none!important}
+.spl-spin{width:18px;height:18px;border-radius:50%;border:2.5px solid #99f6e4;border-top-color:#0d9488;animation:spl-rot .8s linear infinite}
+.spl-act{margin-top:22px}
+@keyframes spl-rot{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spl-spin{animation-duration:2s}}
 </style>
     <script id="sipena-login-js">
 (function () {
   "use strict";
-  var SK = "sipena_session", CK = "rc_credentials", MAXFAIL = 5, LOCKMS = 30000;
+  var BTN = "Masuk dengan akun belajar.id";
+  var HINT = "Gunakan akun belajar.id Anda. Tidak perlu mengetik email dan kata sandi di sini; cukup pilih akun pada jendela Google yang terbuka.";
+  var SCHOOL = "UPTD SPF SD Negeri Lanas 1";
   var I = {
-    mail: '<svg class="spl-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m4 8 8 5.5L20 8"/></svg>',
-    lock: '<svg class="spl-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10.5" width="16" height="10" rx="3"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/><circle cx="12" cy="15.5" r="1.2" fill="currentColor"/></svg>',
-    eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>',
-    eyeoff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18M10.6 5.7A9.9 9.9 0 0 1 12 5.5c6.4 0 10 6.5 10 6.5a17 17 0 0 1-3.2 3.9M6.4 7.4A16.7 16.7 0 0 0 2 12s3.6 6.5 10 6.5c1.6 0 3-.4 4.2-1M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
-    shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></svg>',
     school: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" width="22" height="22"><path d="M3 10.5 12 5l9 5.5"/><path d="M5 10.5V19h14v-8.5"/><path d="M9.5 19v-4.5h5V19"/><path d="M12 5V2.8M12 2.8h3"/></svg>',
-    user: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg>'
+    shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></svg>',
+    google: '<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>'
   };
   window.__SIPENA_ICON_LOGOUT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3"/><path d="m16 17 5-5-5-5M21 12H9"/></svg>';
 
-  function users() { try { return JSON.parse(localStorage.getItem("rc_users") || "[]") || []; } catch (e) { return []; } }
-  function creds() { try { return JSON.parse(localStorage.getItem(CK) || "{}") || {}; } catch (e) { return {}; } }
-  function norm(e) { return String(e || "").trim().toLowerCase(); }
-  function roleLabel(r) { return r === "kepala_sekolah" ? "Kepala Sekolah" : r === "admin" ? "Administrator" : "Guru"; }
-  function rnd() {
-    try { var a = new Uint8Array(12); crypto.getRandomValues(a); return Array.prototype.map.call(a, function (x) { return ("0" + x.toString(16)).slice(-2); }).join(""); }
-    catch (e) { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
-  }
-  function cyrb(str, seed) {
-    var h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
-    for (var i = 0; i < str.length; i++) { var ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
-    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
-  }
-  async function hash(salt, pw, algo) {
-    var s = "sipena::" + salt + "::" + pw;
-    if (algo !== "c" && window.crypto && crypto.subtle && window.TextEncoder) {
-      try {
-        var b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
-        return "s:" + Array.prototype.map.call(new Uint8Array(b), function (x) { return ("0" + x.toString(16)).slice(-2); }).join("");
-      } catch (e) {}
-    }
-    if (algo === "s") return null;
-    return "c:" + cyrb(s, 1) + cyrb(s, 2);
-  }
-  async function verify(rec, pw) { var algo = rec.hash.charAt(0); var h = await hash(rec.salt, pw, algo); return h !== null && h === rec.hash; }
+  // Salinan data pengguna awal aplikasi (dipakai bila rc_users belum ada di perangkat ini).
+  var SEED = [
+    { id: "user-ks-1", name: "SAHWANTO, S.Pd.", email: "sahwanto41@admin.sd.belajar.id", nip: "19820512 200801 1 015", role: "kepala_sekolah", schoolName: SCHOOL },
+    { id: "user-admin-1", name: "Operator Kurikulum dan Admin", email: "admin.sdnlanas1@bondowosokab.go.id", nip: "19890415 201402 1 003", role: "admin", schoolName: SCHOOL },
+    { id: "user-guru-1", name: "Budi Santoso, S.Pd.", email: "budisantoso.sd@belajar.id", nip: "19870312 201101 1 008", role: "guru", assignedGrade: 4, assignedSubject: "Guru Kelas 4 (Fase B)", schoolName: SCHOOL },
+    { id: "user-guru-2", name: "Dewi Lestari, S.Pd.SD.", email: "dewilestari.sd@belajar.id", nip: "19920824 201903 2 011", role: "guru", assignedGrade: 1, assignedSubject: "Guru Kelas 1 (Fase A)", schoolName: SCHOOL }
+  ];
+  var ME = null;
 
-  function getSession() { try { var v = sessionStorage.getItem(SK) || localStorage.getItem(SK); return v ? JSON.parse(v) : null; } catch (e) { return null; } }
-  function setSession(id, remember) {
-    try { sessionStorage.removeItem(SK); localStorage.removeItem(SK); (remember ? localStorage : sessionStorage).setItem(SK, JSON.stringify({ id: id, t: Date.now() })); } catch (e) {}
+  function norm(e) { return String(e || "").trim().toLowerCase(); }
+  function slug(e) { return norm(e).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""); }
+  function users() {
+    try {
+      var raw = localStorage.getItem("rc_users");
+      if (raw === null) return JSON.parse(JSON.stringify(SEED));
+      var a = JSON.parse(raw); return Array.isArray(a) ? a : [];
+    } catch (e) { return JSON.parse(JSON.stringify(SEED)); }
+  }
+  function niceName(email, display) {
+    if (display && String(display).trim()) return String(display).trim();
+    var n = String(email).split("@")[0].replace(/[._-]+/g, " ").replace(/\d+$/, "").trim();
+    return n ? n.replace(/\b[a-z]/g, function (c) { return c.toUpperCase(); }) : email;
+  }
+  function whenBody(f) { if (document.body) f(); else document.addEventListener("DOMContentLoaded", f); }
+
+  /* ---- Akun SIPENA untuk akun belajar.id yang sedang masuk ---- */
+  // Akun yang sudah ada dipakai apa adanya (kepala sekolah, admin, guru). Akun yang belum ada didaftarkan otomatis sebagai Guru.
+  // Siapa yang boleh masuk ditentukan aturan Firestore (daftar email), bukan di sini.
+  function ensureSelf() {
+    if (!ME) return null;
+    var list = users(), e = norm(ME.email);
+    var me = list.filter(function (u) { return norm(u.email) === e; })[0];
+    if (!me) {
+      me = { id: "user-" + slug(ME.email), name: niceName(ME.email, ME.name), email: ME.email, nip: "", role: "guru", schoolName: SCHOOL };
+      list.push(me);
+      try { localStorage.setItem("rc_users", JSON.stringify(list)); } catch (x) {}
+    }
+    try { localStorage.setItem("rc_active_user_id", me.id); } catch (x) {}
+    return me;
+  }
+
+  function switchAccount() {
+    Promise.resolve(window.__rcSignOut ? window.__rcSignOut() : null).catch(function () {}).then(function () { location.reload(); });
   }
   window.__sipenaLogout = function () {
     if (!confirm("Keluar dari SIPENA?")) return;
-    try { sessionStorage.removeItem(SK); localStorage.removeItem(SK); } catch (e) {}
-    location.reload();
+    switchAccount();
   };
 
-  function show(done) {
-    var root = document.createElement("div");
+  /* ---- Tampilan login: satu tombol, tanpa email dan kata sandi ---- */
+  var root, el = {};
+  function build() {
+    if (root) return;
+    root = document.createElement("div");
     root.className = "spl-root"; root.id = "sipena-login";
     root.innerHTML =
       '<div class="spl-wrap">' +
@@ -338,98 +394,80 @@
           '<div class="sipena-logo">' + window.__SIPENA_LOGO + '</div>' +
           '<div class="sipena-3d spl-title" data-text="SIPENA">SIPENA</div>' +
           '<p class="spl-tag">Sistem Perencanaan Pembelajaran</p>' +
-          '<p class="spl-school">UPTD SPF SD Negeri Lanas 1 · Kec. Botolinggo, Kab. Bondowoso<br>Tahun Pelajaran 2026/2027</p>' +
+          '<p class="spl-school">UPTD SPF SD Negeri Lanas 1 \u00b7 Kec. Botolinggo, Kab. Bondowoso<br>Tahun Pelajaran 2026/2027</p>' +
           '<ul class="spl-chips"><li>Kalender Pendidikan</li><li>Capaian dan Alur Tujuan</li><li>Prota dan Prosem</li><li>CERDAS AI</li></ul>' +
         '</section>' +
         '<section class="spl-card">' +
           '<div class="spl-school-card"><div class="spl-school-ic">' + I.school + '</div><div><b>UPTD SPF SD Negeri Lanas 1</b><span>Kec. Botolinggo, Kab. Bondowoso</span></div></div>' +
-          '<h2 id="spl-h">Masuk ke akun Anda</h2>' +
-          '<p class="spl-hint" id="spl-p">Gunakan email yang terdaftar pada sistem.</p>' +
-          '<form id="spl-form" novalidate autocomplete="on">' +
-            '<label class="spl-lab" for="spl-email">Email</label>' +
-            '<div class="spl-field">' + I.mail + '<input id="spl-email" type="email" autocomplete="username" placeholder="nama@belajar.id" autofocus></div>' +
-            '<div class="spl-who" id="spl-who"></div>' +
-            '<label class="spl-lab" for="spl-pw" id="spl-pwl">Kata sandi</label>' +
-            '<div class="spl-field">' + I.lock + '<input id="spl-pw" type="password" autocomplete="current-password" placeholder="Masukkan kata sandi"><button type="button" class="spl-eye" id="spl-eye" aria-label="Tampilkan kata sandi">' + I.eye + '</button></div>' +
-            '<div id="spl-cwrap" hidden><label class="spl-lab" for="spl-pw2">Ulangi kata sandi</label>' +
-            '<div class="spl-field">' + I.lock + '<input id="spl-pw2" type="password" autocomplete="new-password" placeholder="Ketik ulang kata sandi"></div></div>' +
-            '<div class="spl-row"><label class="spl-check"><input type="checkbox" id="spl-rem"> Ingat saya di perangkat ini</label></div>' +
-            '<div class="spl-msg" id="spl-msg" role="alert" aria-live="polite"></div>' +
-            '<button class="spl-btn" id="spl-go" type="submit">MASUK</button>' +
-          '</form>' +
-          '<p class="spl-foot">' + I.shield.replace('<svg','<svg style="width:12px;height:12px;vertical-align:-2px;margin-right:4px"') + 'Akses terbatas bagi guru dan staf sekolah.<br>Lupa kata sandi? Hubungi Administrator Kurikulum.</p>' +
+          '<h2 id="spl-h"></h2>' +
+          '<p class="spl-hint" id="spl-p"></p>' +
+          '<button class="spl-gbtn" id="spl-gbtn" type="button">' + I.google + '<span>' + BTN + '</span></button>' +
+          '<div class="spl-load" id="spl-load" hidden><i class="spl-spin"></i><span id="spl-loadt"></span></div>' +
+          '<button class="spl-btn spl-act" id="spl-act" type="button" hidden></button>' +
+          '<div class="spl-msg" id="spl-msg" role="alert" aria-live="polite"></div>' +
+          '<p class="spl-foot">' + I.shield.replace('<svg', '<svg style="width:12px;height:12px;vertical-align:-2px;margin-right:4px"') + 'Akses terbatas bagi guru dan staf sekolah.<br>Akun belum bisa masuk? Hubungi Administrator Kurikulum.</p>' +
         '</section>' +
       '</div>';
     document.body.appendChild(root);
-
-    var $ = function (id) { return root.querySelector("#" + id); };
-    var email = $("spl-email"), pw = $("spl-pw"), pw2 = $("spl-pw2"), msg = $("spl-msg"), go = $("spl-go"), who = $("spl-who");
-    var mode = "login", fails = 0, lockUntil = 0;
-
-    function say(t, info) { msg.textContent = t || ""; msg.className = "spl-msg" + (info ? " info" : ""); }
-    function shake() { var c = root.querySelector(".spl-card"); c.classList.remove("spl-shake"); void c.offsetWidth; c.classList.add("spl-shake"); }
-    function setMode(m) {
-      mode = m;
-      $("spl-cwrap").hidden = m !== "activate";
-      $("spl-h").textContent = m === "activate" ? "Aktivasi akun" : "Masuk ke akun Anda";
-      $("spl-p").textContent = m === "activate" ? "Akun ini belum memiliki kata sandi. Buat kata sandi (minimal 6 karakter) untuk mengaktifkannya." : "Gunakan email yang terdaftar pada sistem.";
-      $("spl-pwl").textContent = m === "activate" ? "Kata sandi baru" : "Kata sandi";
-      pw.autocomplete = m === "activate" ? "new-password" : "current-password";
-      go.textContent = m === "activate" ? "AKTIFKAN & MASUK" : "MASUK";
-    }
-    function findUser() { var e = norm(email.value); return e ? users().filter(function (u) { return norm(u.email) === e; })[0] : null; }
-
-    email.addEventListener("input", function () {
-      var u = findUser();
-      who.className = "spl-who" + (u ? " on" : "");
-      who.innerHTML = u ? I.user + '<span>' + String(u.name).replace(/</g, "&lt;") + ' · ' + roleLabel(u.role) + '</span>' : "";
-      if (mode === "activate") { setMode("login"); pw.value = ""; pw2.value = ""; }
-      say("");
-    });
-    $("spl-eye").addEventListener("click", function () {
-      var hid = pw.type === "password";
-      pw.type = hid ? "text" : "password"; pw2.type = pw.type;
-      this.innerHTML = hid ? I.eyeoff : I.eye;
-    });
-
-    function finish(u) {
-      setSession(u.id, $("spl-rem").checked);
-      try { localStorage.setItem("rc_active_user_id", u.id); } catch (e) {}
-      root.classList.add("spl-out");
-      setTimeout(function () { if (root.parentNode) root.parentNode.removeChild(root); }, 380);
-      done();
-    }
-
-    $("spl-form").addEventListener("submit", async function (ev) {
-      ev.preventDefault();
-      if (Date.now() < lockUntil) { say("Terlalu banyak percobaan. Coba lagi dalam " + Math.ceil((lockUntil - Date.now()) / 1000) + " detik."); shake(); return; }
-      if (!norm(email.value)) { say("Email wajib diisi."); email.focus(); return; }
-      var u = findUser();
-      if (!u) { say("Email tidak terdaftar pada sistem."); shake(); return; }
-      var c = creds(), rec = c[u.id];
-      go.disabled = true;
-      try {
-        if (mode === "login" && !rec) { setMode("activate"); pw.value = ""; pw2.value = ""; pw.focus(); say("Akun ditemukan. Silakan buat kata sandi untuk aktivasi.", true); return; }
-        if (!pw.value) { say("Kata sandi wajib diisi."); pw.focus(); return; }
-        if (mode === "activate") {
-          if (pw.value.length < 6) { say("Kata sandi minimal 6 karakter."); shake(); return; }
-          if (pw.value !== pw2.value) { say("Pengulangan kata sandi tidak sama."); shake(); return; }
-          var salt = rnd(); c[u.id] = { salt: salt, hash: await hash(salt, pw.value), at: Date.now() };
-          try { localStorage.setItem(CK, JSON.stringify(c)); } catch (e) { say("Gagal menyimpan kata sandi di perangkat ini."); return; }
-          finish(u); return;
-        }
-        if (await verify(rec, pw.value)) { fails = 0; finish(u); }
-        else {
-          fails++;
-          if (fails >= MAXFAIL) { lockUntil = Date.now() + LOCKMS; fails = 0; say("Terlalu banyak percobaan gagal. Tunggu 30 detik."); }
-          else say("Kata sandi salah. Sisa percobaan: " + (MAXFAIL - fails) + ".");
-          shake(); pw.select();
-        }
-      } finally { go.disabled = false; }
-    });
-    setTimeout(function () { try { email.focus(); } catch (e) {} }, 60);
+    ["h", "p", "gbtn", "load", "loadt", "act", "msg"].forEach(function (k) { el[k] = root.querySelector("#spl-" + k); });
+  }
+  function setMsg(t, info) { if (!el.msg) return; el.msg.textContent = t || ""; el.msg.className = "spl-msg" + (info ? " info" : ""); }
+  function setState(s, o) {
+    o = o || {};
+    build();
+    root.classList.remove("spl-out");
+    el.gbtn.hidden = s !== "login";
+    el.load.hidden = s !== "loading";
+    el.act.hidden = s !== "block";
+    if (s === "login") { el.h.textContent = "Masuk ke SIPENA"; el.p.textContent = HINT; }
+    else if (s === "loading") { el.h.textContent = "Menyiapkan SIPENA"; el.p.textContent = "Menyinkronkan data sekolah dari server."; el.loadt.textContent = o.text || "Memuat\u2026"; }
+    else { el.h.textContent = o.title || "Tidak dapat masuk"; el.p.textContent = ""; el.act.textContent = o.label || "Muat ulang"; el.act.onclick = o.onClick || function () { location.reload(); }; }
+    setMsg(o.message, o.info);
+  }
+  function hide() {
+    if (!root) return;
+    var r = root; root = null; el = {};
+    r.classList.add("spl-out");
+    setTimeout(function () { if (r.parentNode) r.parentNode.removeChild(r); }, 380);
+  }
+  function errText(e) {
+    var c = e && e.code;
+    if (c === "auth/popup-closed-by-user" || c === "auth/cancelled-popup-request") return "Jendela login ditutup sebelum selesai. Silakan coba lagi.";
+    if (c === "auth/popup-blocked") return "Pop-up diblokir browser. Izinkan pop-up untuk situs ini, lalu coba lagi.";
+    if (c === "auth/unauthorized-domain") return "Alamat situs ini belum didaftarkan di Firebase (Authentication \u2192 Authorized domains).";
+    if (c === "auth/network-request-failed") return "Tidak ada koneksi internet. Periksa jaringan Anda.";
+    return "Gagal masuk" + (c ? " (" + c + ")" : "") + ". Silakan coba lagi.";
   }
 
+  window.__sipenaAuthUI = {
+    show: function (doLogin, message) {
+      whenBody(function () {
+        setState("login", { message: message });
+        el.gbtn.onclick = function () {
+          var b = el.gbtn;
+          setMsg(""); b.disabled = true; b.querySelector("span").textContent = "Membuka jendela Google\u2026";
+          Promise.resolve().then(doLogin).catch(function (e) { setMsg(errText(e)); }).then(function () {
+            if (b) { b.disabled = false; b.querySelector("span").textContent = BTN; }
+          });
+        };
+      });
+    },
+    loading: function (text) { whenBody(function () { setState("loading", { text: text }); }); },
+    hide: hide
+  };
+
+  function fatal(f) {
+    var code = f && f.code, email = f && f.email, o;
+    if (location.protocol === "file:" || code === "auth/operation-not-supported-in-this-environment")
+      o = { title: "Buka lewat alamat web", message: "Login belajar.id hanya berfungsi dari alamat web (https://), bukan dari file yang dibuka langsung.", label: "Muat ulang" };
+    else if (code === "permission-denied")
+      o = { title: "Akun belum diizinkan", message: "Akun " + (email || "ini") + " belum terdaftar untuk mengakses data SIPENA. Hubungi Administrator Kurikulum agar email ini ditambahkan.", label: "Ganti akun", onClick: switchAccount };
+    else if (code === "unavailable" || code === "auth/network-request-failed")
+      o = { title: "Tidak ada koneksi", message: "Tidak dapat terhubung ke server. Periksa koneksi internet, lalu coba lagi.", label: "Coba lagi" };
+    else
+      o = { title: "Gagal memuat SIPENA", message: "Terjadi kesalahan" + (code ? " (" + code + ")" : "") + ". Muat ulang halaman atau hubungi Administrator.", label: "Muat ulang" };
+    whenBody(function () { setState("block", o); });
+  }
 
   /* ---- Migrasi sekali jalan: samakan teks data tersimpan dengan EYD ---- */
   var MIG_KEY = "sipena_eyd_v1";
@@ -450,15 +488,30 @@
     } catch (e) {}
   }
 
+
+  function purgeLegacyCreds() { // sisa sistem kata sandi lama tidak dipakai lagi
+    try {
+      var del = [], i, k;
+      for (i = 0; i < localStorage.length; i++) { k = localStorage.key(i); if (k === "rc_credentials" || k === "sipena_session" || (k && k.indexOf("rc_cred_") === 0)) del.push(k); }
+      del.forEach(function (x) { localStorage.removeItem(x); });
+      sessionStorage.removeItem("sipena_session");
+    } catch (e) {}
+  }
+
   var dcl = false;
   document.addEventListener("DOMContentLoaded", function () { dcl = true; });
   function gate() {
     return new Promise(function (resolve) {
       function start() {
+        if (!window.__rcCloud) { migrate(); resolve(); return; }          // mode lokal (Firebase belum dikonfigurasi)
+        if (window.__rcFatal || !window.__rcUser) { fatal(window.__rcFatal || { code: "no-user" }); return; } // aplikasi tidak dimuat
+        ME = window.__rcUser;
+        purgeLegacyCreds();
         migrate();
-        var s = getSession(), u = s && users().filter(function (x) { return x.id === s.id; })[0];
-        if (u) { try { localStorage.setItem("rc_active_user_id", u.id); } catch (e) {} return resolve(); }
-        show(resolve);
+        ensureSelf();
+        window.__rcEnsureSelf = ensureSelf;
+        hide();
+        resolve();
       }
       if (dcl || document.readyState === "complete") start(); else document.addEventListener("DOMContentLoaded", start);
     });
