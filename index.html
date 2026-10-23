@@ -787,11 +787,39 @@ function parse(text){if(!text)return null;var x=String(text).replace(/```json/gi
 window.__sipTpFromAi=function(text,g,cp,n){var v=parse(text);if(!v||!v.length)return null;var half=Math.ceil(v.length/2),jp=Math.max(1,Math.floor((n||114)/v.length)),cnt={ganjil:0,genap:0},now=Date.now();
  return v.map(function(o,i){var sm=o.semesterTarget==="genap"?"genap":(o.semesterTarget==="ganjil"?"ganjil":(i<half?"ganjil":"genap"));cnt[sm]++;
   return{id:"tp-ai-"+now+"-"+i,code:code(g,sm,cnt[sm]),order:i+1,statement:o.statement,materialScope:o.materialScope||"Lingkup Materi "+(i+1),recommendedGrade:g,semesterTarget:sm,jpAllocation:Number(o.jpAllocation)||jp,cognitiveLevel:o.cognitiveLevel||"Memahami",cpElementName:o.cpElementName||(cp.elements[0]&&cp.elements[0].name),pedagogicalNotes:o.pedagogicalNotes||"Disusun dengan bantuan CERDAS AI"}})};
-/* cadangan: minimal 6 TP (8 bila JP >= 150), tiap elemen CP dipakai berulang dengan fokus berbeda */
-window.__sipFallbackTp=function(cp,g,n){var els=cp.elements&&cp.elements.length?cp.elements:[{name:"Capaian Pembelajaran",id:""}],min=n>=150?8:6,tot=Math.max(min,els.length),
- foc=["pemahaman konsep","penerapan dalam konteks nyata","pendalaman dan analisis","refleksi dan komunikasi hasil"],lv=["Memahami","Mengaplikasikan","Menganalisis","Mengevaluasi"],jp=Math.max(1,Math.floor((n||114)/tot)),out=[],half=Math.ceil(tot/2);
- for(var i=0;i<tot;i++){var el=els[i%els.length],r=Math.floor(i/els.length),sm=i<half?"ganjil":"genap";
-  out.push({id:"tp-gen-"+Date.now()+"-"+i,code:code(g,sm,sm==="ganjil"?i+1:i+1-half),order:i+1,statement:"Murid mampu menunjukkan "+foc[r%foc.length]+" pada elemen "+String(el.name).toLowerCase()+" dalam mata pelajaran "+cp.subject+" melalui kegiatan yang berkesadaran, bermakna, dan menggembirakan.",materialScope:"Unit "+(i+1)+": "+el.name+" ("+foc[r%foc.length]+")",recommendedGrade:g,semesterTarget:sm,jpAllocation:i===tot-1?(n||114)-jp*(tot-1):jp,cognitiveLevel:lv[r%lv.length],cpElementRefId:el.id,cpElementName:el.name,pedagogicalNotes:"Rancangan awal otomatis (tanpa AI); sunting rumusan sesuai konteks kelas."})}
+/* ATP: SETIAP elemen CP wajib muncul di semester ganjil DAN genap (spiral: kedalaman naik di genap) */
+function elsOf(cp){return cp&&cp.elements&&cp.elements.length?cp.elements:[{name:"Capaian Pembelajaran",id:""}]}
+function key(x){return String(x||"").toLowerCase().replace(/[^a-z0-9]+/g,"")}
+function sameEl(a,b){var x=key(a),y=key(b);return !!x&&!!y&&(x===y||(x.length>3&&y.length>3&&(x.indexOf(y)>-1||y.indexOf(x)>-1)))}
+function smOf(o){return o.semesterTarget==="genap"?"genap":"ganjil"}
+var FOC=["pemahaman konsep","penerapan dalam konteks nyata","pendalaman dan analisis","refleksi dan komunikasi hasil"],LV=["Memahami","Mengaplikasikan","Menganalisis","Mengevaluasi"];
+function mk(cp,g,el,sm,k,r,jp,idx){return{id:"tp-gen-"+Date.now()+"-"+idx,code:code(g,sm,k),order:idx+1,statement:"Murid mampu menunjukkan "+FOC[r%FOC.length]+" pada elemen "+String(el.name).toLowerCase()+" dalam mata pelajaran "+cp.subject+" melalui kegiatan yang berkesadaran, bermakna, dan menggembirakan.",materialScope:"Unit "+k+": "+el.name+" ("+FOC[r%FOC.length]+")",recommendedGrade:g,semesterTarget:sm,jpAllocation:jp,cognitiveLevel:LV[r%LV.length],cpElementRefId:el.id,cpElementName:el.name,pedagogicalNotes:"Rancangan awal otomatis (tanpa AI); sunting rumusan sesuai konteks kelas."}}
+/* true bila tiap elemen CP punya >= 1 TP di ganjil dan >= 1 TP di genap */
+window.__sipCovOk=function(list,cp){if(!list||!list.length)return false;var els=elsOf(cp);
+ for(var i=0;i<els.length;i++)for(var s=0;s<2;s++){var sm=s?"genap":"ganjil",ok=false;
+  for(var j=0;j<list.length;j++){if(smOf(list[j])===sm&&sameEl(list[j].cpElementName,els[i].name)){ok=true;break}}
+  if(!ok)return false}
+ return true};
+/* Lengkapi TP hasil AI yang belum menutup semua elemen di kedua semester, total JP dijaga tetap = n */
+window.__sipBalanceTp=function(list,cp,g,n){
+ if(!list||!list.length||window.__sipCovOk(list,cp))return list;
+ var els=elsOf(cp),out=list.slice(),tot0=0,added=[];
+ out.forEach(function(o){tot0+=Number(o.jpAllocation)||0});
+ var avg=Math.max(1,Math.round(tot0/out.length));
+ els.forEach(function(el){["ganjil","genap"].forEach(function(sm){
+  var has=out.some(function(o){return smOf(o)===sm&&sameEl(o.cpElementName,el.name)});
+  if(!has){var t=mk(cp,g,el,sm,1,sm==="genap"?1:0,avg,out.length);out.push(t);added.push(t)}})});
+ out=out.filter(function(o){return smOf(o)==="ganjil"}).concat(out.filter(function(o){return smOf(o)==="genap"}));
+ var tn=Number(n)||0;
+ if(tn>0){var sum=0;out.forEach(function(o){sum+=Number(o.jpAllocation)||0});
+  if(sum>0&&sum!==tn){var f=tn/sum,big=0;out.forEach(function(o,i){o.jpAllocation=Math.max(1,Math.round((Number(o.jpAllocation)||0)*f));if(o.jpAllocation>out[big].jpAllocation)big=i});
+   var s2=0;out.forEach(function(o){s2+=o.jpAllocation});out[big].jpAllocation=Math.max(1,out[big].jpAllocation+tn-s2)}}
+ var c={ganjil:0,genap:0};out.forEach(function(o,i){var m=smOf(o);c[m]++;o.code=code(g,m,c[m]);o.order=i+1});
+ return out};
+/* cadangan tanpa AI: tiap semester memuat SEMUA elemen CP (min 3 TP/semester, 4 bila JP >= 150) */
+window.__sipFallbackTp=function(cp,g,n){var els=elsOf(cp),per=Math.max(n>=150?4:3,els.length),tot=per*2,jp=Math.max(1,Math.floor((n||114)/tot)),out=[];
+ ["ganjil","genap"].forEach(function(sm,si){for(var k=0;k<per;k++){var el=els[k%els.length],r=Math.floor(k/els.length)+si,idx=out.length;
+  out.push(mk(cp,g,el,sm,k+1,r,idx===tot-1?(n||114)-jp*(tot-1):jp,idx))}});
  return out};
 })();
 </script>
@@ -919,7 +947,7 @@ Acuan alur dari Panduan BSKAP untuk kelas ${t} (urutan boleh digabung atau dises
 - `+e.referenceAlur[t].join(`
 - `):``}
 
-Hasilkan daftar ${n>=150?`8 hingga 12`:`6 hingga 10`} Tujuan Pembelajaran (TP) (minimal ${n>=150?8:6} objek dalam satu array; semester ganjil dan genap masing-masing minimal ${n>=150?4:3} TP; jangan hanya 1 TP) yang logis, berurutan dari semester ganjil ke genap, dengan total alokasi JP mendekati atau tepat ${n} JP.
+Hasilkan daftar ${n>=150?`8 hingga 12`:`6 hingga 10`} Tujuan Pembelajaran (TP) (minimal ${n>=150?8:6} objek dalam satu array; semester ganjil dan genap masing-masing minimal ${Math.max(n>=150?4:3,e.elements.length)} TP; jangan hanya 1 TP; WAJIB: setiap elemen CP (total ${e.elements.length} elemen) memiliki minimal 1 TP di semester ganjil DAN minimal 1 TP di semester genap, sehingga semua elemen muncul di kedua semester dengan kedalaman meningkat dari ganjil ke genap; isi cpElementName persis sama dengan nama elemen; bila elemen lebih dari 5, jumlah TP boleh melebihi batas atas) yang logis, berurutan dari semester ganjil ke genap, dengan total alokasi JP mendekati atau tepat ${n} JP.
 Format kode TP wajib: TP. <Kelas><Semester><No. TP>, contoh TP. 411 (Kelas 4, Semester 1, TP ke-1) dan TP. 421 (Kelas 4, Semester 2, TP ke-1); nomor TP diulang dari 1 pada tiap semester. Array JSON wajib memuat SEMUA TP (lebih dari satu objek); contoh di bawah hanya menunjukkan bentuk satu objek.\nFormat JSON yang diharapkan:
 [
   {
@@ -940,7 +968,7 @@ Berpedoman pada:
 2. Permendikdasmen No. 13 Tahun 2025 (Struktur Kurikulum) dan Kepka BSKAP 046/H/KR/2025 (Capaian Pembelajaran; PAI: Kepka BKPDM 020/2026).
 3. Panduan Pembelajaran dan Asesmen (PPA) 2025.
 Tugas Anda adalah membedah teks CP menjadi Tujuan Pembelajaran (TP) yang runtut, terukur, dan kontekstual.
-WAJIB merespons hanya dalam format JSON valid berupa array objek.`);{let minTp=n>=150?8:6,d=window.__sipTpFromAi(i.success&&i.text,t,e,n);if(i.success&&(!d||d.length<minTp)){let i2=await this.callGeminiApi(r+`\n\nPENTING: balasan sebelumnya hanya memuat ${d?d.length:0} TP. Balas dengan array JSON berisi minimal ${minTp} objek TP (minimal ${minTp/2} TP per semester, seluruh ${e.elements.length} elemen CP tercakup), tanpa teks lain.`,window.__sipSys);let d2=window.__sipTpFromAi(i2.success&&i2.text,t,e,n);if(d2&&(!d||d2.length>d.length))d=d2}if(d&&d.length>=2)return{success:!0,data:d,rawText:i.text}}return{success:!0,data:window.__sipFallbackTp(e,t,n),isFallback:!0,message:`Rancangan ATP disusun menggunakan algoritma pedagogis standar Permendikdasmen 1/2026.`}}async refineObjectiveStatement(e,t){let n=`Perbaiki rumusan Tujuan Pembelajaran (TP) berikut untuk mata pelajaran ${t} tingkat SD:
+WAJIB merespons hanya dalam format JSON valid berupa array objek.`);{let minTp=n>=150?8:6,d=window.__sipTpFromAi(i.success&&i.text,t,e,n);if(i.success&&(!d||d.length<minTp||!window.__sipCovOk(d,e))){let i2=await this.callGeminiApi(r+`\n\nPENTING: balasan sebelumnya hanya memuat ${d?d.length:0} TP. Balas dengan array JSON berisi minimal ${minTp} objek TP (minimal ${minTp/2} TP per semester, SETIAP dari ${e.elements.length} elemen CP wajib ada di semester ganjil DAN genap, cpElementName sama persis dengan nama elemen), tanpa teks lain.`,window.__sipSys);let d2=window.__sipTpFromAi(i2.success&&i2.text,t,e,n);if(d2&&(!d||(window.__sipCovOk(d2,e)&&!window.__sipCovOk(d,e))||(window.__sipCovOk(d2,e)===window.__sipCovOk(d,e)&&d2.length>d.length)))d=d2}if(d&&d.length>=2)return{success:!0,data:window.__sipBalanceTp(d,e,t,n),rawText:i.text}}return{success:!0,data:window.__sipFallbackTp(e,t,n),isFallback:!0,message:`Rancangan ATP disusun menggunakan algoritma pedagogis standar Permendikdasmen 1/2026.`}}async refineObjectiveStatement(e,t){let n=`Perbaiki rumusan Tujuan Pembelajaran (TP) berikut untuk mata pelajaran ${t} tingkat SD:
 "${e}"
 
 Pedoman Permendikdasmen No. 1 Tahun 2026:
