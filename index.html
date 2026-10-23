@@ -775,7 +775,27 @@
   window.__rcReady = Promise.resolve(window.__rcReady).then(gate);
 })();
 </script>
-    <script id="sipena-genap-helpers">
+    <script id="sipena-tp-ai-helpers">
+(function(){"use strict";
+function code(g,sm,no){return window.__tpCode?window.__tpCode(g,sm,no):"TP. "+g+(sm==="genap"?2:1)+no}
+function parse(text){if(!text)return null;var x=String(text).replace(/```json/gi,"").replace(/```/g,"").trim(),v=null;
+ try{v=JSON.parse(x)}catch(e){var a=x.indexOf("["),b=x.lastIndexOf("]");
+  if(a>=0&&b>a){try{v=JSON.parse(x.slice(a,b+1))}catch(e2){}}
+  if(!v){var m=x.match(/\{[^{}]*"statement"[^{}]*\}/g);if(m){v=[];m.forEach(function(q){try{v.push(JSON.parse(q))}catch(e3){}})}}}
+ if(v&&!Array.isArray(v)){var k=Object.keys(v).filter(function(q){return Array.isArray(v[q])})[0];v=k?v[k]:(v.statement?[v]:null)}
+ return v&&v.length?v.filter(function(o){return o&&o.statement}):null}
+window.__sipTpFromAi=function(text,g,cp,n){var v=parse(text);if(!v||!v.length)return null;var half=Math.ceil(v.length/2),jp=Math.max(1,Math.floor((n||114)/v.length)),cnt={ganjil:0,genap:0},now=Date.now();
+ return v.map(function(o,i){var sm=o.semesterTarget==="genap"?"genap":(o.semesterTarget==="ganjil"?"ganjil":(i<half?"ganjil":"genap"));cnt[sm]++;
+  return{id:"tp-ai-"+now+"-"+i,code:code(g,sm,cnt[sm]),order:i+1,statement:o.statement,materialScope:o.materialScope||"Lingkup Materi "+(i+1),recommendedGrade:g,semesterTarget:sm,jpAllocation:Number(o.jpAllocation)||jp,cognitiveLevel:o.cognitiveLevel||"Memahami",cpElementName:o.cpElementName||(cp.elements[0]&&cp.elements[0].name),pedagogicalNotes:o.pedagogicalNotes||"Disusun dengan bantuan CERDAS AI"}})};
+/* cadangan: minimal 6 TP (8 bila JP >= 150), tiap elemen CP dipakai berulang dengan fokus berbeda */
+window.__sipFallbackTp=function(cp,g,n){var els=cp.elements&&cp.elements.length?cp.elements:[{name:"Capaian Pembelajaran",id:""}],min=n>=150?8:6,tot=Math.max(min,els.length),
+ foc=["pemahaman konsep","penerapan dalam konteks nyata","pendalaman dan analisis","refleksi dan komunikasi hasil"],lv=["Memahami","Mengaplikasikan","Menganalisis","Mengevaluasi"],jp=Math.max(1,Math.floor((n||114)/tot)),out=[],half=Math.ceil(tot/2);
+ for(var i=0;i<tot;i++){var el=els[i%els.length],r=Math.floor(i/els.length),sm=i<half?"ganjil":"genap";
+  out.push({id:"tp-gen-"+Date.now()+"-"+i,code:code(g,sm,sm==="ganjil"?i+1:i+1-half),order:i+1,statement:"Murid mampu menunjukkan "+foc[r%foc.length]+" pada elemen "+String(el.name).toLowerCase()+" dalam mata pelajaran "+cp.subject+" melalui kegiatan yang berkesadaran, bermakna, dan menggembirakan.",materialScope:"Unit "+(i+1)+": "+el.name+" ("+foc[r%foc.length]+")",recommendedGrade:g,semesterTarget:sm,jpAllocation:i===tot-1?(n||114)-jp*(tot-1):jp,cognitiveLevel:lv[r%lv.length],cpElementRefId:el.id,cpElementName:el.name,pedagogicalNotes:"Rancangan awal otomatis (tanpa AI); sunting rumusan sesuai konteks kelas."})}
+ return out};
+})();
+</script>
+<script id="sipena-genap-helpers">
 (function(){"use strict";
 var MN=["Januari","Februari","Maret","April","Mei","Juni"],DAY=864e5;
 function D(x){var a=String(x).split("-");return Date.UTC(+a[0],+a[1]-1,+a[2])}
@@ -899,8 +919,8 @@ Acuan alur dari Panduan BSKAP untuk kelas ${t} (urutan boleh digabung atau dises
 - `+e.referenceAlur[t].join(`
 - `):``}
 
-Hasilkan daftar ${n>=150?`8 hingga 12`:`4 hingga 6`} Tujuan Pembelajaran (TP) yang logis, berurutan dari semester ganjil ke genap, dengan total alokasi JP mendekati atau tepat ${n} JP.
-Format kode TP wajib: TP. <Kelas><Semester><No. TP>, contoh TP. 411 (Kelas 4, Semester 1, TP ke-1) dan TP. 421 (Kelas 4, Semester 2, TP ke-1); nomor TP diulang dari 1 pada tiap semester.\nFormat JSON yang diharapkan:
+Hasilkan daftar ${n>=150?`8 hingga 12`:`6 hingga 10`} Tujuan Pembelajaran (TP) (minimal ${n>=150?8:6} objek dalam satu array; semester ganjil dan genap masing-masing minimal ${n>=150?4:3} TP; jangan hanya 1 TP) yang logis, berurutan dari semester ganjil ke genap, dengan total alokasi JP mendekati atau tepat ${n} JP.
+Format kode TP wajib: TP. <Kelas><Semester><No. TP>, contoh TP. 411 (Kelas 4, Semester 1, TP ke-1) dan TP. 421 (Kelas 4, Semester 2, TP ke-1); nomor TP diulang dari 1 pada tiap semester. Array JSON wajib memuat SEMUA TP (lebih dari satu objek); contoh di bawah hanya menunjukkan bentuk satu objek.\nFormat JSON yang diharapkan:
 [
   {
     "code": "TP. ${t}11",
@@ -914,13 +934,13 @@ Format kode TP wajib: TP. <Kelas><Semester><No. TP>, contoh TP. 411 (Kelas 4, Se
     "cpElementName": "Nama elemen yang relevan",
     "pedagogicalNotes": "Catatan aktivitas pembelajaran bermakna"
   }
-]`,i=await this.callGeminiApi(r,`Anda adalah CERDAS AI, konsultan perencanaan kurikulum sekolah dasar UPTD SPF SD Negeri Lanas 1, Botolinggo, Bondowoso.
+]`,i=await this.callGeminiApi(r,window.__sipSys=`Anda adalah CERDAS AI, konsultan perencanaan kurikulum sekolah dasar UPTD SPF SD Negeri Lanas 1, Botolinggo, Bondowoso.
 Berpedoman pada:
 1. Permendikdasmen No. 1 Tahun 2026 (Standar Proses: dokumen perencanaan memuat tujuan pembelajaran, langkah pembelajaran, dan asesmen; prinsip berkesadaran, bermakna, menggembirakan; pengalaman belajar memahami, mengaplikasi, merefleksi). Gunakan istilah Murid dan Pendidik.
 2. Permendikdasmen No. 13 Tahun 2025 (Struktur Kurikulum) dan Kepka BSKAP 046/H/KR/2025 (Capaian Pembelajaran; PAI: Kepka BKPDM 020/2026).
 3. Panduan Pembelajaran dan Asesmen (PPA) 2025.
 Tugas Anda adalah membedah teks CP menjadi Tujuan Pembelajaran (TP) yang runtut, terukur, dan kontekstual.
-WAJIB merespons hanya dalam format JSON valid berupa array objek.`);if(i.success&&i.text)try{let n=i.text.replace(/```json/g,``).replace(/```/g,``).trim(),r=JSON.parse(n);if(Array.isArray(r)&&r.length>0)return{success:!0,data:r.map((n,r)=>({id:`tp-ai-`+Date.now()+`-`+r,code:`TP. ${t}${n.semesterTarget===`genap`?2:1}${r+1}`,order:r+1,statement:n.statement,materialScope:n.materialScope||`Lingkup Materi ${r+1}`,recommendedGrade:t,semesterTarget:n.semesterTarget===`genap`?`genap`:`ganjil`,jpAllocation:Number(n.jpAllocation)||18,cognitiveLevel:n.cognitiveLevel||`Memahami`,cpElementName:n.cpElementName||e.elements[0]?.name,pedagogicalNotes:n.pedagogicalNotes||`Disusun dengan bantuan CERDAS AI`})),rawText:i.text}}catch(e){console.error(`Failed to parse AI response JSON:`,e)}return{success:!0,data:e.elements.map((r,i)=>{let a=i+1,o=a<=Math.ceil(e.elements.length/2),s=Math.floor(n/(e.elements.length||4));return{id:`tp-gen-`+Date.now()+`-`+i,code:`TP. ${t}${o?1:2}${a}`,order:a,statement:`Murid mampu memahami dan mendemonstrasikan konsep ${r.name.toLowerCase()} pada materi ${e.subject} melalui eksplorasi kontekstual yang berkesadaran dan menggembirakan.`,materialScope:`Unit ${a}: Pendalaman Elemen ${r.name}`,recommendedGrade:t,semesterTarget:o?`ganjil`:`genap`,jpAllocation:s,cognitiveLevel:i===0?`Memahami`:i===1?`Mengaplikasikan`:`Menganalisis`,cpElementRefId:r.id,cpElementName:r.name,pedagogicalNotes:`Berdasarkan elemen resmi ${r.name} ${e.seedRev&&e.seedRev.includes(`020-2026`)?`Kepka BKPDM 020/2026`:`Kepka BSKAP 046/H/KR/2025`}.`}}),isFallback:!0,message:`Rancangan ATP disusun menggunakan algoritma pedagogis standar Permendikdasmen 1/2026.`}}async refineObjectiveStatement(e,t){let n=`Perbaiki rumusan Tujuan Pembelajaran (TP) berikut untuk mata pelajaran ${t} tingkat SD:
+WAJIB merespons hanya dalam format JSON valid berupa array objek.`);{let minTp=n>=150?8:6,d=window.__sipTpFromAi(i.success&&i.text,t,e,n);if(i.success&&(!d||d.length<minTp)){let i2=await this.callGeminiApi(r+`\n\nPENTING: balasan sebelumnya hanya memuat ${d?d.length:0} TP. Balas dengan array JSON berisi minimal ${minTp} objek TP (minimal ${minTp/2} TP per semester, seluruh ${e.elements.length} elemen CP tercakup), tanpa teks lain.`,window.__sipSys);let d2=window.__sipTpFromAi(i2.success&&i2.text,t,e,n);if(d2&&(!d||d2.length>d.length))d=d2}if(d&&d.length>=2)return{success:!0,data:d,rawText:i.text}}return{success:!0,data:window.__sipFallbackTp(e,t,n),isFallback:!0,message:`Rancangan ATP disusun menggunakan algoritma pedagogis standar Permendikdasmen 1/2026.`}}async refineObjectiveStatement(e,t){let n=`Perbaiki rumusan Tujuan Pembelajaran (TP) berikut untuk mata pelajaran ${t} tingkat SD:
 "${e}"
 
 Pedoman Permendikdasmen No. 1 Tahun 2026:
