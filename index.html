@@ -1742,6 +1742,14 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 body{overflow-x:hidden}
 .sp-menu-btn,.sp-backdrop{display:none}
 
+/* Laptop/desktop: sidebar menempel di layar, tidak ikut tergulir bersama halaman */
+@media screen and (min-width:1024px){
+  #root .min-h-screen.flex > aside{
+    position:sticky;top:0;align-self:flex-start;
+    height:100vh;height:100dvh;overflow-y:auto;overscroll-behavior:contain;
+  }
+}
+
 @media screen and (max-width:1023px){
   /* tinggi layar penuh yang akurat di browser HP (bar alamat naik-turun) */
   #root .min-h-screen{min-height:100vh;min-height:100dvh}
